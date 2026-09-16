@@ -24,6 +24,16 @@ class ByteStream {
     size_t _capacity = 0;
     bool _error = false;  //!< Flag indicating that the stream suffered an error.
 
+    bool _input_ended = false;  //!< Flag indicating that the writer has ended the input.
+
+    size_t _bytes_written = 0;  //!< Cumulative number of bytes accepted from the writer.
+    size_t _bytes_read = 0;     //!< Cumulative number of bytes handed to the reader.
+
+    //! Buffered bytes, only the ones starting at `_buffer_start` are still unread.
+    std::string _buffer{};
+    //! Index within `_buffer` of the first byte that has not been popped yet.
+    size_t _buffer_start = 0;
+
   public:
     //! Construct a stream with room for `capacity` bytes.
     ByteStream(const size_t capacity);
