@@ -17,8 +17,27 @@ void get_URL(const string &host, const string &path) {
     // (not just one call to read() -- everything) until you reach
     // the "eof" (end of file).
 
-    cerr << "Function called: get_URL(" << host << ", " << path << ")\n";
-    cerr << "Warning: get_URL() has not been implemented yet.\n";
+    // Open a reliable byte stream to port 80 ("http") of the server.
+    TCPSocket socket;
+    socket.connect(Address(host, "http"));
+
+    // Send the HTTP request. Every line ends with CRLF, and the blank line
+    // that closes the request is what tells the server we are done asking.
+    socket.write("GET " + path + " HTTP/1.1\r\n");
+    socket.write("Host: " + host + "\r\n");
+    // "Connection: close" asks the server to hang up as soon as it has replied,
+    // so our incoming byte stream reaches EOF when the reply is complete.
+    socket.write("Connection: close\r\n");
+    socket.write("\r\n");
+
+    // Print the response -- headers and body -- as it arrives. The reply comes
+    // back in arbitrarily sized pieces, so keep reading until the socket is at
+    // EOF (the server closed its half of the stream) rather than reading once.
+    while (not socket.eof()) {
+        cout << socket.read();
+    }
+
+    socket.close();
 }
 
 int main(int argc, char *argv[]) {
