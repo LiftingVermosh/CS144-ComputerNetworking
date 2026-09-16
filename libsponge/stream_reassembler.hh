@@ -4,6 +4,8 @@
 #include "byte_stream.hh"
 
 #include <cstdint>
+#include <map>
+#include <optional>
 #include <string>
 
 //! \brief A class that assembles a series of excerpts from a byte stream (possibly out of order,
@@ -13,6 +15,26 @@ class StreamReassembler {
     // Your code here -- add private members as necessary.
     ByteStream _output;  //!< The reassembled in-order byte stream
     size_t _capacity;    //!< The maximum number of bytes
+
+    //! Bytes that have arrived but cannot be pushed to `_output` yet, because an earlier
+    //! byte of the stream is still missing. Keys are indices in the stream; the values are
+    //! non-empty, pairwise disjoint, and never adjacent, so consecutive entries are always
+    //! separated by at least one hole. Keeping one copy of every index is what makes
+    //! `_capacity` a real memory limit rather than a limit on what we have been handed.
+    std::map<uint64_t, std::string> _stored{};
+
+    //! Number of bytes held in `_stored`, maintained incrementally so that
+    //! `unassembled_bytes()` costs O(1) instead of a walk over every substring.
+    size_t _stored_bytes = 0;
+
+    //! Index just past the last byte of the stream, once a segment carrying the end
+    //! of the stream has been accepted in full.
+    std::optional<uint64_t> _eof_index{};
+
+    //! Merge the bytes `[start, end)` of `data` -- whose own first byte sits at stream
+    //! index `index` -- into `_stored`, coalescing them with whatever they overlap or
+    //! touch. The caller has already clipped `[start, end)` to the new, storable bytes.
+    void merge_pending_bytes(const std::string &data, uint64_t index, uint64_t start, uint64_t end);
 
   public:
     //! \brief Construct a `StreamReassembler` that will store up to `capacity` bytes.
