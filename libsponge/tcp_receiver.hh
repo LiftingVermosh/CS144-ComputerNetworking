@@ -21,12 +21,28 @@ class TCPReceiver {
     //! The maximum number of bytes we'll store.
     size_t _capacity;
 
+    // NEW: 记录 ISN 并用于判定是否收到
+    std::optional<WrappingInt32> _isn{
+      std::nullopt
+    };
+
+    // NEW: 记录 FIN 标志
+    bool _fin_received{
+      false
+    };
+
   public:
     //! \brief Construct a TCP receiver
     //!
     //! \param capacity the maximum number of bytes that the receiver will
     //!                 store in its buffers at any give time.
     TCPReceiver(const size_t capacity) : _reassembler(capacity), _capacity(capacity) {}
+
+    /**
+     * NOTE: 注意到此处没采用函数体构造而是相对不常见的初始化列表
+     * StreamReassembler 没有默认构造函数，不进初始化列表的话，编译器得先默认构造 _reassembler，那一步将会直接编译失败。
+     * 所以这里没有选择余地。
+     */
 
     //! \name Accessors to provide feedback to the remote TCPSender
     //!@{
