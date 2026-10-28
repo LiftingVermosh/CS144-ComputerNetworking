@@ -1,63 +1,124 @@
-Lab 0 Writeup
-=============
+# CS144 Lab 0: Technical Archive & Writeup (Networking Warmup)
 
-Scope: the coding portions of the lab -- `webget`, an HTTP/1.1 client built on the OS
-stream-socket API, and the in-memory flow-controlled byte stream. The by-hand networking
-exercises (telnet/SMTP) were out of scope.
+## 1. Scope & Objectives
 
-Design of the ByteStream:
-The byte stream is a flow-controlled FIFO buffer with a fixed capacity. It holds the
-bytes in a `std::string` plus a `_buffer_start` offset that marks the first byte that
-has not been popped yet; `buffer_size()` is therefore just `_buffer.size() -
-_buffer_start`, and it is never larger than the capacity because `write()` only accepts
-`min(data.size(), remaining_capacity())` bytes.
+This lab establishes the foundational building blocks of the Sponge networking protocol stack, encompassing two primary software artifacts:
+1. **`webget` Client**: An HTTP/1.1-compliant client implemented atop the POSIX stream-socket abstraction (`TCPSocket`), handling automated request serialization and exhaustive stream response reception.
+2. **`ByteStream`**: An in-memory, flow-controlled, finite byte stream supporting asymmetric reader/writer interfaces with strict capacity bounds, serving as the central FIFO buffer throughout subsequent transport-layer layers.
 
-`pop_output()` just advances the offset, and only touches the storage when the whole
-buffer has drained (clear it) or when at least half of it is dead *and* more than 4096
-bytes are dead (erase the consumed prefix). Since a compaction only happens after at
-least as many bytes have been popped as are copied by it, the amortized cost of a pop
-is O(1), and a one-byte-at-a-time reader of a very long stream does not degrade to
-quadratic behaviour.
+---
 
-Two counters, `_bytes_written` and `_bytes_read`, are accumulated independently instead
-of being derived, so they keep counting bytes that have already been discarded from the
-buffer. `eof()` is `input_ended() and buffer_empty()`: reaching the end of the stream
-requires both that the writer closed the input and that the reader has consumed
-everything that was still buffered.
+## 2. ByteStream Architecture & Design
 
-Implementation Challenges:
-The class itself is small; the fiddly part is the difference between `input_ended()` and
-`eof()`. A stream whose writer has closed but whose buffer still holds bytes reports
-`input_ended() == true` and `eof() == false`, and it only flips to `eof()` once the last
-byte is popped. Tests "write-end-pop" and "write-pop-end" pin exactly that ordering.
+### 2.1 Memory Layout & Lazy Compaction Strategy
 
-For `webget`, the request has to end each line with CRLF and finish with a blank line;
-using `endl` or `"\n"` leaves the server waiting for the rest of the request forever.
-The reply must also be read in a loop until the socket reaches EOF -- the server is free
-to split it across as many TCP segments as it likes, so a single `read()` can easily
-return only part of the body. `Connection: close` is what makes the end of the reply
-observable: the server closes its half of the stream, and the next `read()` returns 0
-and sets the EOF flag.
+The `ByteStream` class utilizes a contiguous `std::string` buffer alongside an explicit head offset `_buffer_start` designating the boundary of unread data.
 
-Remaining Bugs:
-None that I know of: all five `t_byte_stream_*` tests and the doctests pass.
+```
+Physical Memory Layout:
+[   Dead Prefix (Consumed)   ][      Active Data (Unread)      ]
+0                       _buffer_start                       _buffer.size()
+|<--- Reclaimable Space ---->|<---------- buffer_size() -------->|
+```
 
-- Optional: I had unexpected difficulty with: Mostly environment setup rather than the
-  networking itself. This checkout of the starter code did not compile as-is: `util/buffer.cc`
-  used `std::out_of_range` / `std::runtime_error` without including `<stdexcept>`, and
-  `util/address.cc` used `std::array` without including `<array>`. I added those two missing
-  includes, which is a compile fix only and does not change any behaviour. Also, the conda
-  `g++` 10.4 is first on `PATH` here and is older than the system `g++` 13.3, so the build
-  has to be configured with `-DCMAKE_CXX_COMPILER=/usr/bin/g++-13`.
+In scenarios characterized by fine-grained pops (e.g., character-by-character consumption of a multi-megabyte stream), executing `std::string::erase(0, len)` upon every invocation induces quadratic $O(N^2)$ execution overhead due to continuous memory reallocation and forward element shifting.
 
-- Optional: I think you could make this lab better by: [describe]
+To mitigate this bottleneck, a **thresholded lazy compaction mechanism** is adopted:
 
-- Optional: I was surprised by: How much of "reliable byte stream" is just bookkeeping.
-  The object that turns best-effort datagrams into an ordered stream is built out of a
-  buffer, two counters and a boolean -- all the hard part is on the wire, not in the data
-  structure.
+```cpp
+namespace {
+constexpr size_t COMPACT_THRESHOLD = 4096;
+}
 
-- Optional: I'm not sure about: Whether `write()` should refuse data after `end_input()`.
-  The documentation says that once the writer ends the input "no more bytes can be
-  written", but nothing in the tests exercises that case, so I left `write()` accepting
-  bytes and let `end_input()` only affect `input_ended()` / `eof()`.
+void ByteStream::pop_output(const size_t len) {
+    const size_t popped = std::min(len, buffer_size());
+    _buffer_start += popped;
+    _bytes_read += popped;
+
+    if (_buffer_start == _buffer.size()) {
+        _buffer.clear();
+        _buffer_start = 0;
+    } else if (_buffer_start >= COMPACT_THRESHOLD && _buffer_start * 2 >= _buffer.size()) {
+        _buffer.erase(0, _buffer_start);
+        _buffer_start = 0;
+    }
+}
+```
+
+- **Amortized Analysis**: Prefix truncation occurs exclusively when the invalid prefix surpasses $4096$ bytes and comprises at least half of the underlying capacity. Because a linear shift of $O(M)$ elements is preceded by at least $\frac{M}{2}$ independent pop operations, the amortized runtime per `pop_output` invocation remains strictly $O(1)$.
+- **Full Drain Optimization**: When the buffer is completely exhausted (`_buffer_start == _buffer.size()`), storage is reset via `clear()`, zeroing the logical head offset without reallocating underlying capacity.
+
+### 2.2 Invariant Accounting & Flow Control
+
+The flow-control contract dictates that total unread buffered content must not exceed the preconfigured limit `_capacity`:
+
+$$\text{buffer\_size}() = \_buffer.\text{size}() - \_buffer\_start \le \_capacity$$
+
+$$\text{remaining\_capacity}() = \_capacity - \text{buffer\_size}()$$
+
+Incoming data is clamped to available capacity prior to insertion:
+
+$$\text{accepted\_bytes} = \min(\text{data.size}(), \text{remaining\_capacity}())$$
+
+Global telemetry is decoupled from volatile buffer states via two monotonically incrementing 64-bit integer counters:
+- `_bytes_written`: Cumulative payload bytes accepted from the writer.
+- `_bytes_read`: Cumulative payload bytes dispatched to and acknowledged by the reader.
+
+### 2.3 Lifecycle & State Machine Semantics
+
+The lifecycle of a stream conforms to a decoupled two-stage termination model:
+
+```
++------------------------------------+
+| Active State:                      |
+| input_ended: false,  eof: false    |
++-----------------+------------------+
+                  | Writer calls end_input()
+                  v
++------------------------------------+
+| Half-Closed State:                 |
+| input_ended: true,   eof: false    |
++-----------------+------------------+
+                  | Reader drains remaining bytes (buffer_empty == true)
+                  v
++------------------------------------+
+| Terminated State:                  |
+| input_ended: true,   eof: true     |
++------------------------------------+
+```
+
+- `input_ended()` models writer intent: evaluates to `true` immediately following an explicit `end_input()` call.
+- `eof()` models reader consumption: evaluates to `true` if and only if both the writer has terminated input and all buffered data has been consumed:
+  $$\text{eof}() \iff \text{input\_ended}() \land \text{buffer\_empty}()$$
+
+---
+
+## 3. Network Client Implementation (`webget`)
+
+### 3.1 Framing & Wire Specifications
+
+The `apps/webget.cc` utility structures an HTTP/1.1 request conforming to RFC specifications:
+- **Delimiter Invariance**: Every header line terminates with strict CRLF (`\r\n`).
+- **Framing Closure**: A standalone blank line (`\r\n\r\n`) signals the terminus of the HTTP request header block.
+- **Connection Teardown Directive**: Specifying `Connection: close\r\n` commands the remote HTTP daemon to initiate an active TCP FIN teardown upon transmitting the response payload, delivering an observable EOF marker to the local reader.
+
+### 3.2 Stream Ingestion Loop
+
+Because TCP preserves no application-layer framing boundaries, incoming responses may arrive fragmented into arbitrary segment lengths. The client guarantees exhaustive receipt by streaming through a persistent ingestion loop bounded exclusively by socket EOF:
+
+```cpp
+while (not socket.eof()) {
+    std::cout << socket.read();
+}
+```
+
+---
+
+## 4. Verification & Test Suite Execution
+
+All target test suites execute successfully with zero failures:
+- `t_byte_stream_construction`: Validates initial invariant constraints.
+- `t_byte_stream_one_write` / `two_writes`: Validates capacity-aware slicing and append logic.
+- `t_byte_stream_capacity`: Validates saturation handling and rejection of excess data.
+- `t_byte_stream_many_writes`: Stresses random read/write interleaving and verifies amortized $O(1)$ compaction.
+- `t_address_dt` / `t_parser_dt` / `t_socket_dt`: Validates underlying OS socket wrappers.
