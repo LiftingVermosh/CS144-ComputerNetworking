@@ -33,6 +33,55 @@ class TCPSender {
     uint64_t _next_seqno{0};
 
     // Your code here -- add private members as necessary.
+    // 计时器结构
+    class Timer {
+      private:
+        bool _running{false};
+        size_t _time_elapsed{0};
+        unsigned int _rto{0};
+      
+      public:
+        Timer(unsigned int rto) : _rto(rto) {}
+
+        void start() { 
+          _running = true; 
+          _time_elapsed = 0; 
+        }
+
+        void stop() { 
+          _running = false; 
+          _time_elapsed = 0; 
+        }
+
+        bool is_running() const { 
+          return _running; 
+        }
+
+        void tick(size_t ms) { if (_running) _time_elapsed += ms; }
+
+        bool is_expired() const { 
+          return _running && (_time_elapsed >= _rto);
+        }
+
+        void double_rto() { 
+          _rto *= 2; 
+        }
+
+        void reset_rto(unsigned int initial_rto) { 
+          _rto = initial_rto; 
+        }
+    };
+
+    Timer _timer{
+      _initial_retransmission_timeout
+    };
+    std::queue<TCPSegment> _outstanding_segments{}; // 在途待确认报文队列
+    uint64_t _bytes_in_flight{0};                   // 在途字节数缓存
+    uint16_t _window_size{1};                       // 对端通告窗口 (默认假定为 1)
+    uint64_t _last_acked_seqno{0};                  // 最新确认的绝对序号
+    unsigned int _consecutive_retx_count{0};        // 连续重传计数器
+    bool _syn_sent{false};                          // SYN 是否已发送
+    bool _fin_sent{false};                          // FIN 是否已发送
 
   public:
     //! Initialize a TCPSender
