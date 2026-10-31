@@ -23,6 +23,15 @@ class TCPConnection {
 
     // Your code here -- add private members as necessary.
 
+    size_t _time_since_last_segment_received{0};  // 自上次接收有效报文的时间
+    bool _active{true};                          // 存活与否
+
+    // 拉取报文，附加必要字段后送出
+    void _send_segments();
+
+    // 异常处理，关闭连接
+    void _abort_connection(bool send_rst);
+
   public:
     //! \name "Input" interface for the writer
     //!@{
