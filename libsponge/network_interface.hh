@@ -7,6 +7,8 @@
 
 #include <optional>
 #include <queue>
+#include <unordered_map>
+#include <vector>
 
 //! \brief A "network interface" that connects IP (the internet layer, or network layer)
 //! with Ethernet (the network access layer, or link layer).
@@ -40,7 +42,26 @@ class NetworkInterface {
     //! outbound queue of Ethernet frames that the NetworkInterface wants sent
     std::queue<EthernetFrame> _frames_out{};
 
-    // Your code here -- add private members as necessary.
+    static constexpr size_t ARP_ENTRY_TTL = 30000;      //!< ARP 映射条目缓存有效期 30 秒 (30,000 ms)
+    static constexpr size_t ARP_REQUEST_TTL = 5000;     //!< 同一 IP 重复发送 ARP 请求的抑制窗口 5 秒 (5,000 ms)
+
+    struct ArpEntry {
+        EthernetAddress mac{};
+        size_t ttl{ARP_ENTRY_TTL};
+    };
+
+    std::unordered_map<uint32_t, ArpEntry> _arp_table{};                           //!< ARP 缓存条目映射表 (IP -> {MAC, TTL})
+    std::unordered_map<uint32_t, std::vector<InternetDatagram>> _waiting_dgrams{}; //!< 未决 IP 数据报等待队列 (IP -> 数据报列表)
+    std::unordered_map<uint32_t, size_t> _arp_request_timer{};                     //!< ARP 请求限频计时器 (IP -> 剩余静默时间)
+
+    //! 构造并广播一个 ARP 请求帧
+    void _send_arp_request(const uint32_t ip);
+
+    //! 构造并单播回复一个 ARP 应答帧
+    void _send_arp_reply(const EthernetAddress &target_eth, const uint32_t target_ip);
+
+    //! 将 IPv4 数据报封装为以太网帧并发入 _frames_out
+    void send_ipv4_frame(const EthernetAddress &dst_eth, const InternetDatagram &dgram);
 
   public:
     //! \brief Construct a network interface with given Ethernet (network-access-layer) and IP (internet-layer) addresses
