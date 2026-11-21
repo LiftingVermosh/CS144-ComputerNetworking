@@ -2,9 +2,12 @@
 *.o
 /.vscode
 /build
+/Testing
+/tests
 CMakeCache.txt
 CMakeFiles
 Makefile
 cmake_install.cmake
 CTestTestfile.cmake
 compile_commands.json
+notes
