@@ -49,7 +49,15 @@ class Router {
     //! datagram's destination address.
     void route_one_datagram(InternetDatagram &dgram);
 
-    // Your code here -- add private members as necessary.
+    struct RouteEntry {
+        uint32_t route_prefix{};          // 目标网络前缀
+        uint8_t prefix_length{};          // 匹配长度
+        std::optional<Address> next_hop{};  // 下一跳
+        size_t interface_num{};           // 出口编号
+    };
+
+    // TODO: 优化为 Trie Tree
+    std::vector<RouteEntry> _routing_table{};
 
   public:
     //! Add an interface to the router
